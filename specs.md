@@ -66,35 +66,39 @@ The solution will be built within the **Azure AI Foundry** ecosystem, primarily 
 
 #### **4. Data & Logic Flow**
 
-The entire process will be orchestrated as a **Chat Flow** within Prompt Flow to manage conversational history automatically.
+The entire process will be orchestrated as a **Chat Flow** within Prompt Flow to manage conversational history automatically, taking advantage of OpenAI function calling capabilities.
 
 1.  **Initiation:** The user clicks "Troubleshoot" in the scanner app. The app sends the recent scanner logs as the initial input to the Prompt Flow endpoint.
 2.  **Log Analysis:** The flow's first step is a Python tool that pre-processes the raw logs. It extracts critical error codes, timestamps, and key status messages, summarizing them into a clean, structured "Problem Statement".
 3.  **Knowledge Retrieval:** A second Python tool takes the extracted error codes and problem statement, generates an embedding using Azure OpenAI, and queries the Pinecone vector database to retrieve a list of the top 3-5 most relevant troubleshooting guide chunks.
 4.  **Stateful Interaction Loop (Core of the Chat Flow):**
-    a.  An LLM tool (`State_Manager_LLM`) analyzes the current `chat_history`, the original problem statement, and the full list of retrieved knowledge base steps.
-    b.  Its primary job is to decide the `next_action`. The prompt will instruct it to output a JSON object like `{"action": "ACTION_TYPE", "details": "..."}`.
-    c.  Possible `ACTION_TYPE` values are:
-        *   `SUGGEST_REMEDY`: If there are untried steps in the knowledge base. The `details` will contain the text of the next remedy to suggest.
-        *   `EXECUTE_COMMAND`: If the knowledge base indicates an automated command sequence is available for the error. The `details` will contain a command_id and any parameters.
-        *   `AWAITING_USER_FEEDBACK`: After a remedy has been suggested.
-        *   `ALL_STEPS_EXHAUSTED`: If the user has confirmed that all relevant remedies from the knowledge base have failed.
-        *   `CLARIFY`: If the user's response is ambiguous.
-    d.  This decision is passed to the next nodes.
-5.  **Automated Command Execution (Conditional Logic):**
-    a.  A Python tool (`Execute_Command_Python`) is configured with a conditional `Activate config`.
-    b.  **Condition:** `when ${State_Manager_LLM.output.action} == "EXECUTE_COMMAND"`
-    c.  This tool interfaces with the Command Execution Service to run predefined command sequences, such as terminating specific processes in Task Manager.
-    d.  Each command sequence has a unique `command_id` that maps to a predefined script or command template.
-6.  **Automated Escalation (Conditional Logic):**
-    a.  A Python tool (`Create_Support_Ticket_Python`) is configured with a conditional `Activate config`.
-    b.  **Condition:** `when ${State_Manager_LLM.output.action} == "ALL_STEPS_EXHAUSTED"`
-    c.  This tool makes a `POST` request to the internal ticketing system API, sending the problem statement and conversation history.
-7.  **Response Generation:**
-    a.  A final Python tool (`Format_Final_Response_Python`) constructs the message to send back to the user.
-    b.  If the next action is `SUGGEST_REMEDY`, it formats the suggestion clearly.
-    c.  If a ticket was created (i.e., the `Create_Support_Ticket_Python` node ran and returned a ticket ID), it formats the confirmation message with the ticket number and callback details.
-8.  **Output:** The flow's `chat_output` is the formatted message, which is displayed to the user in the scanner's chat interface.
+    a.  A GPT-4o-enabled LLM tool (`State_Manager_LLM`) analyzes the current `chat_history`, the original problem statement, and the full list of retrieved knowledge base steps.
+    b.  Its primary job is to decide the `next_action` using a function-calling approach where the model explicitly selects from a set of defined tools.
+    c.  The following function tools are defined in the model's system message:
+        *   `suggest_remedy`: When there are untried steps in the knowledge base. Parameters include `remedy_text` (the exact text of the remedy to suggest) and `expected_outcome` (what should happen if the remedy is successful).
+        *   `execute_command`: When an automated command sequence is available. Parameters include `command_id`, `params` (command parameters as a JSON object), and `request_consent` (boolean, defaulting to true for system-modifying actions).
+        *   `request_clarification`: When the user's response is ambiguous. Parameters include `question` (the clarification question to ask).
+        *   `create_support_ticket`: When all remedies have been exhausted. Parameters include `reason` (why escalation is needed) and `troubleshooting_summary` (summary of attempts made).
+    d.  The LLM makes an explicit function call based on the MSDR reasoning process, which is then routed to the appropriate tool.
+5.  **Automated Tool Execution (Function Calling Pattern):**
+    a.  Instead of conditional activation, the pattern uses parallel function calling capabilities of GPT-4o to determine which functions should be executed.
+    b.  Each defined function corresponds to a Python tool in the Prompt Flow that implements the required logic.
+    c.  This approach allows for more dynamic interaction and potential parallel execution of compatible functions.
+    d.  When GPT-4o determines a command needs to be executed, the `execute_command` function is called, which maps to the Command Execution Service.
+6.  **Command Execution Service Integration:**
+    a.  A Python tool (`Execute_Command_Python`) is triggered when the `execute_command` function is called.
+    b.  It interfaces with the Windows-based Command Execution Service to run predefined command sequences.
+    c.  Each command sequence has a unique `command_id` that maps to a predefined script or command template.
+    d.  The tool enforces user consent for system-modifying actions.
+7.  **Ticketing System Integration:**
+    a.  A Python tool (`Create_Support_Ticket_Python`) is triggered when the `create_support_ticket` function is called.
+    b.  It makes a `POST` request to the internal ticketing system API, sending the problem statement and conversation history.
+    c.  It returns ticket information to be included in the response to the user.
+8.  **Response Generation:**
+    a.  The function call results are sent back to the LLM along with the conversation history.
+    b.  The LLM then generates a natural language response incorporating the results of the function calls.
+    c.  This allows for complex multi-function scenarios where multiple tools might be invoked in a single interaction.
+9.  **Output:** The flow's `chat_output` is the formatted message, which is displayed to the user in the scanner's chat interface.
 
 ---
 
@@ -417,7 +421,32 @@ The MSDR pattern will be implemented using a hybrid approach combining zero-shot
 *   **Prompt (Jinja):**
     ```jinja
     system:
-    You are a sophisticated troubleshooting state manager for iTero scanners. Your role is to decide the next action in a troubleshooting conversation.
+    You are a sophisticated troubleshooting state manager for iTero scanners. Your role is to decide the next action in a troubleshooting conversation using OpenAI function calling capabilities.
+    
+    You have access to the following tools through function calling:
+    
+    # Available Functions
+    You can call the following functions:
+    
+    1. suggest_remedy(remedy_text: str, expected_outcome: str)
+    - Use when there are untried steps in the knowledge base that the user should manually perform
+    - remedy_text: The exact text of the remedy to suggest to the user, including step-by-step instructions
+    - expected_outcome: What should happen if the remedy is successful
+    
+    2. execute_command(command_id: str, params: object, request_consent: bool = true)
+    - Use when an automated command sequence is available that can be executed by the system
+    - command_id: The identifier for the predefined command to execute (e.g., "kill_process", "restart_service")
+    - params: Parameters required for the command as a JSON object (e.g., {"process_name": "iTeroScannerService.exe"})
+    - request_consent: Whether user consent should be requested before execution (default to true for system-modifying actions)
+    
+    3. request_clarification(question: str)
+    - Use when the user's response is ambiguous or more information is needed
+    - question: The specific question to ask the user to clarify their response or provide more details
+    
+    4. create_support_ticket(reason: str, troubleshooting_summary: str)
+    - Use when all remedies have been exhausted or the issue requires human support
+    - reason: Why escalation is needed (e.g., "All remedies attempted without success")
+    - troubleshooting_summary: A concise summary of all troubleshooting steps attempted and their outcomes
     
     You must follow a structured Chain of Thought approach called "Multi-Stage Diagnostic Reasoning" (MSDR) with these five stages:
     
@@ -452,13 +481,25 @@ The MSDR pattern will be implemented using a hybrid approach combining zero-shot
     - Set appropriate expectations for outcomes
     - Ensure consent is requested when system changes are needed
     
-    After completing all five stages, your output MUST be a single, valid JSON object with the keys "action" and "details".
-    Possible values for "action" are: "SUGGEST_REMEDY", "EXECUTE_COMMAND", "ALL_STEPS_EXHAUSTED", "CLARIFY".
+    After completing all five stages, you MUST call one of the available functions to determine the next action in the troubleshooting flow.
     
-    - If suggesting a remedy, "details" should contain the exact text of the remedy to provide to the user.
-    - If executing a command, "details" should be a JSON object with "command_id", "params", and "request_consent" fields. Always set "request_consent" to true for any system-modifying commands.
-    - If all steps are exhausted, "details" should be "All knowledge base steps have been attempted."
-    - If clarifying, "details" should contain the question to ask the user.
+    # Implementation of Zero-Shot and Few-Shot Learning
+    
+    Your reasoning process should use a hybrid approach:
+    
+    1. Zero-Shot Learning:
+      - Use for initial error code categorization and classification
+      - Apply to simple diagnostic scenarios with clear patterns
+      - Use for relevance assessment of retrieved knowledge base content
+      - Apply for binary decision points (e.g., should a command be executed?)
+      - Use when encountering novel error patterns not in examples
+    
+    2. Few-Shot Learning:
+      - Apply for complex diagnostic reasoning chains using the examples below
+      - Use when handling multi-factor troubleshooting scenarios
+      - Apply when distinguishing between similar but distinct error causes
+      - Use for command selection and parameter preparation
+      - Apply when prioritizing actions with multiple potential solutions
     
     Here are examples of how to apply the MSDR framework to different scanner issues:
     
@@ -488,8 +529,11 @@ The MSDR pattern will be implemented using a hybrid approach combining zero-shot
     5. COMMUNICATION STAGE:
     Provide clear instructions on restarting the WiFi adapter in simple terms. Explain that this is a common solution for connectivity issues and sets proper expectations about the outcome.
     
-    Final Decision:
-    {"action": "SUGGEST_REMEDY", "details": "Your scanner is having trouble connecting to the network. Let's try restarting the WiFi adapter: 1) Go to Settings > Network on your scanner's touchscreen. 2) Toggle the WiFi switch off. 3) Wait 10 seconds. 4) Toggle the WiFi switch back on. Please let me know if this resolves the connection issue."}
+    Function Call:
+    suggest_remedy(
+      remedy_text="Your scanner is having trouble connecting to the network. Let's try restarting the WiFi adapter: 1) Go to Settings > Network on your scanner's touchscreen. 2) Toggle the WiFi switch off. 3) Wait 10 seconds. 4) Toggle the WiFi switch back on. Please let me know if this resolves the connection issue.",
+      expected_outcome="WiFi connection is re-established and scanner can connect to the network"
+    )
     
     EXAMPLE 2:
     Problem: Scanner calibration fails with error code 5001. Process iTeroScannerService.exe is not responding.
@@ -518,8 +562,76 @@ The MSDR pattern will be implemented using a hybrid approach combining zero-shot
     5. COMMUNICATION STAGE:
     Clearly explain what process needs to be terminated, why, and that this requires permission. Set expectations about the need to recalibrate afterward.
     
-    Final Decision:
-    {"action": "EXECUTE_COMMAND", "details": {"command_id": "kill_process", "params": {"process_name": "iTeroScannerService.exe"}, "request_consent": true}}
+    Function Call:
+    execute_command(
+      command_id="kill_process",
+      params={"process_name": "iTeroScannerService.exe"},
+      request_consent=true
+    )
+    
+    EXAMPLE 3:
+    Problem: Scanner shows error code 7512 during scan upload.
+    Error Codes: 7512
+    Affected Components: ["cloud upload", "network"]
+    Severity: medium
+    Retrieved Knowledge Base:
+    No specific entries found for error code 7512.
+    Conversation history shows multiple issues reported by user with inconsistent descriptions.
+    
+    Multi-Stage Diagnostic Reasoning:
+    
+    1. OBSERVATION STAGE:
+    Error code 7512 is not documented in our knowledge base. User reports are inconsistent and lack specificity about the exact circumstances when the upload fails.
+    
+    2. KNOWLEDGE INTEGRATION STAGE:
+    No direct knowledge base entries for this error code. Need more information from the user about the context and any error messages displayed.
+    
+    3. REASONING STAGE:
+    Without specific information about when the error occurs and what the user sees on screen, it's difficult to narrow down the cause of the upload failure.
+    
+    4. ACTION PLANNING STAGE:
+    Request clarification from the user to get more specific details about when the error occurs and what they see on the screen.
+    
+    5. COMMUNICATION STAGE:
+    Ask specific, targeted questions that will help identify the root cause of the upload issue.
+    
+    Function Call:
+    request_clarification(
+      question="To help troubleshoot the upload error (code 7512), could you please tell me: 1) At what point during the upload process does the error occur? 2) Is there any specific error message shown on the screen besides the error code? 3) Have uploads worked successfully in the past from this scanner?"
+    )
+    
+    EXAMPLE 4:
+    Problem: The scanner is showing multiple error codes and has been unresponsive for hours.
+    Error Codes: [3045, 5001, 6723]
+    Affected Components: ["system", "network", "calibration"]
+    Severity: high
+    Retrieved Knowledge Base:
+    - KB1: Error 3045 indicates WiFi driver issues. Try restarting the WiFi adapter.
+    - KB3: Error 5001 often indicates the scanner service has crashed or is unresponsive.
+    Conversation history shows user has attempted all suggested remedies without success.
+    
+    Multi-Stage Diagnostic Reasoning:
+    
+    1. OBSERVATION STAGE:
+    Multiple critical error codes indicate a system-wide failure across multiple components. The scanner has been unresponsive for hours despite restart attempts.
+    
+    2. KNOWLEDGE INTEGRATION STAGE:
+    Knowledge base entries exist for some errors but not the combination of all three. The multiple errors suggest a more serious underlying issue.
+    
+    3. REASONING STAGE:
+    The combination of network, service, and calibration errors suggests a possible hardware failure or severe system corruption. All software-based remediation steps have been exhausted.
+    
+    4. ACTION PLANNING STAGE:
+    Create a support ticket as all knowledge base remedies have been exhausted and the issue persists. The combination of errors requires technical support intervention.
+    
+    5. COMMUNICATION STAGE:
+    Explain to the user that advanced technical support is needed and a ticket will be created.
+    
+    Function Call:
+    create_support_ticket(
+      reason="Multiple critical errors across system components with all remedies exhausted",
+      troubleshooting_summary="User reported errors 3045, 5001, and 6723 affecting network, system services, and calibration. WiFi restart and service restart were attempted without success. Scanner remains unresponsive for extended period."
+    )
 
     user:
     **Original Problem:**
@@ -563,8 +675,7 @@ The MSDR pattern will be implemented using a hybrid approach combining zero-shot
     5. COMMUNICATION STAGE:
     <Think about how to clearly communicate this to the user>
     
-    **Final Decision in JSON format:**
-    ```
+    **Make the appropriate function call based on your reasoning:**
 *   **Deployment:** `gpt-4o`
 
 **4. `Create_Support_Ticket_Python` (Python Tool)**

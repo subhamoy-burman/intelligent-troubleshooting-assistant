@@ -146,6 +146,7 @@ This document outlines the end-to-end project plan for implementing 3. **Prompt 
    - Set up connections to Azure OpenAI
    - Establish connections to Pinecone
    - Configure environment variables and secrets management
+   - Enable OpenAI function calling features and appropriate model versions
 
 2. **Multi-Stage Diagnostic Reasoning (MSDR) Implementation**
    - Define the five-stage CoT pattern: Observation, Knowledge Integration, Reasoning, Action Planning, and Communication
@@ -153,6 +154,7 @@ This document outlines the end-to-end project plan for implementing 3. **Prompt 
    - Create evaluation criteria for each reasoning stage
    - Build logging mechanisms to capture the model's reasoning at each stage
    - Implement targeted testing for each reasoning stage
+   - Ensure MSDR pattern works seamlessly with function calling capabilities
 
 3. **Log Analysis Tool Development**
    - Implement log parsing algorithms
@@ -160,41 +162,49 @@ This document outlines the end-to-end project plan for implementing 3. **Prompt 
    - Develop problem statement generation
    - Build test suite with sample logs
    - Optimize error code extraction to support the Observation stage of MSDR
+   - Implement zero-shot approaches for common error patterns and few-shot for complex ones
 
-4. **State Manager LLM Implementation**
+4. **State Manager LLM Implementation with Function Calling**
    - Develop prompt engineering for state management with explicit MSDR stages
    - Implement conversation history tracking
-   - Create decision logic for next actions
-   - Build evaluation metrics for decision quality
-   - Design prompts that encourage explicit step-by-step reasoning
+   - Define function schemas for suggest_remedy, execute_command, request_clarification, and create_support_ticket
+   - Create validation logic for function parameters
+   - Build evaluation metrics for function selection quality
+   - Design prompts that encourage explicit step-by-step reasoning leading to appropriate function calls
+   - Implement parallel function calling for complex scenarios that require multiple simultaneous actions
+   - Create comprehensive few-shot examples to demonstrate proper function selection and parameter population
 
 5. **Command Execution Integration**
-   - Implement conditional execution logic
+   - Implement function-based execution logic
    - Develop user consent handling
    - Create error handling and retry mechanisms
    - Build monitoring and logging for executed commands
    - Integrate with the Action Planning stage of MSDR
+   - Implement parameter validation and security checks for all command functions
 
 6. **Ticketing System Integration**
    - Implement API client for ticketing system
-   - Develop ticket creation logic
-   - Create conversation transcript formatting
+   - Develop ticket creation logic via function calling
+   - Create conversation transcript formatting 
    - Build notification handling for created tickets
    - Ensure all diagnostic reasoning is captured in ticket creation
+   - Implement automatic fallback to ticket creation when function confidence is low for other actions
 
 7. **Response Formatting Tool**
-   - Implement natural language generation for responses
+   - Implement natural language generation for responses based on function call results
    - Create templates for different response types
-   - Develop conditional formatting based on action types
+   - Develop formatting based on the specific function called and its parameters
    - Build evaluation metrics for response quality
    - Ensure responses reflect the Communication stage principles of MSDR
+   - Implement context-aware response generation that references function parameters
 
 8. **Flow Testing and Optimization**
-   - Develop end-to-end test scenarios
-   - Create evaluation metrics for flow performance
-   - Optimize flow for performance and accuracy
-   - Document baseline performance metrics
-   - Evaluate and refine the MSDR implementation
+   - Develop end-to-end test scenarios for all function paths
+   - Create evaluation metrics for function selection accuracy
+   - Optimize flow for performance and function calling accuracy
+   - Document baseline performance metrics for each function type
+   - Evaluate and refine the MSDR implementation with function calling
+   - Create specialized test suites for zero-shot vs few-shot scenarios
 
 ### Phase 5: UI Integration and User Experience (2 weeks)
 *September 9, 2025 - September 22, 2025*
@@ -351,16 +361,22 @@ This document outlines the end-to-end project plan for implementing 3. **Prompt 
 | Reasoning stage effectiveness | Each MSDR stage contributes measurably to improved outcomes (vs. baseline without structured reasoning) |
 | Explanation quality | >80% of users report understanding why specific actions were recommended |
 | Reasoning transparency | 100% of support tickets include complete diagnostic reasoning chains for analysis |
+| Function calling accuracy | >92% appropriate function selection for given scenarios |
+| Function parameter accuracy | >95% correctly populated parameters for function calls |
+| Function calling latency | <500ms additional latency introduced by function calling vs. direct text generation |
+| Function fallback effectiveness | >90% successful fallback to appropriate alternative functions when primary function fails |
 | Zero-shot learning accuracy | >75% correct issue categorization for common error codes without examples |
 | Few-shot learning efficacy | >90% accuracy improvement when adding examples for complex error scenarios |
 | Learning approach selection | >95% correctly identified when to use zero-shot vs. few-shot approaches |
+| Multi-function orchestration | >85% accurate execution of multi-step troubleshooting requiring multiple function calls |
 
 ## Dependencies
 
 1. **External Systems**:
    - iTero scanner software APIs for integration
    - Existing ticketing system API availability
-   - Azure OpenAI service quotas and availability
+   - Azure OpenAI service quotas and availability with function calling support
+   - Azure OpenAI model versions with parallel function calling capabilities
    - Pinecone service tier and capacity
    - Local file system access for document monitoring in pilot phase
 
@@ -368,6 +384,8 @@ This document outlines the end-to-end project plan for implementing 3. **Prompt 
    - Support team availability for knowledge base content creation
    - IT security approval for Command Execution Service
    - Scanner software release schedule for UI integration
+   - Function schema definition and standardization
+   - Tool response format standardization for function calling
 
 ## Decision Points and Questions
 
@@ -381,26 +399,46 @@ Throughout the project, several key decisions will need to be made that may requ
 
 4. **Azure Migration Plan**: What is the timeline for transitioning from the local ingestion system to an Azure Blob Storage/Functions-based approach after the pilot phase? What additional features should be included in this transition?
 
-5. **Multi-Stage Diagnostic Reasoning Implementation**: 
+5. **OpenAI Function Calling Implementation**:
+   - Which functions should be defined for the troubleshooting process?
+   - How should we structure function schemas to optimize for accurate parameter population?
+   - Should we implement parallel function calling for complex troubleshooting scenarios?
+   - What validation should be performed on function parameters before execution?
+   - How should we handle function call failures and fallbacks?
+   - What metrics should we track to evaluate function calling effectiveness?
+   - Should we implement function versioning to accommodate future expansions?
+
+6. **Multi-Stage Diagnostic Reasoning Implementation**:
    - How should we balance the thoroughness of the MSDR process against performance considerations?
    - Should we log all intermediate reasoning stages for all conversations or only for specific scenarios?
    - How much detail from the reasoning process should be exposed to users versus kept internal?
    - Should we implement specialized evaluation metrics for each reasoning stage?
    - Do we need to create diagnostic datasets specific to each reasoning stage?
+   - How can we optimize the integration between MSDR and function calling?
 
-6. **Zero-Shot vs. Few-Shot Approach**:
+7. **Zero-Shot vs. Few-Shot Learning Implementation**:
    - For which error categories should we use zero-shot learning versus few-shot learning?
    - How many examples should be included in few-shot prompts to optimize for both accuracy and performance?
    - Should we dynamically select between zero-shot and few-shot approaches based on error complexity?
    - How frequently should we update the few-shot examples based on real-world usage patterns?
    - Should we implement a progressive system that starts with zero-shot and falls back to few-shot when confidence is low?
    - What metrics should we use to evaluate when to switch between approaches?
+   - How can we best leverage zero-shot learning for novel error patterns while using few-shot for complex reasoning chains?
+   - Should we create specialized few-shot examples specifically designed for function calling accuracy?
 
-7. **Rollout Strategy**: Should we deploy to all users at once or take a phased approach by region or user type?
+8. **Function Calling and Tool Selection Strategy**:
+   - What criteria should the LLM use to select between different function tools?
+   - How can we optimize function parameter population to ensure accurate execution?
+   - Should we implement progressive function calling where simple functions are tried before complex ones?
+   - How should we handle scenarios where multiple functions might apply?
+   - What confidence threshold should trigger a function call versus requesting more information?
+   - How can we minimize latency while still leveraging the improved accuracy of function calling?
 
-8. **User Consent Approach**: How should we balance ease of use with security when requesting consent for system modifications?
+9. **Rollout Strategy**: Should we deploy to all users at once or take a phased approach by region or user type?
 
-9. **Metrics Collection**: What user interaction data should we collect to improve the system while respecting privacy?
+10. **User Consent Approach**: How should we balance ease of use with security when requesting consent for system modifications?
+
+11. **Metrics Collection**: What user interaction data should we collect to improve the system while respecting privacy?
 
 ## Next Steps
 
