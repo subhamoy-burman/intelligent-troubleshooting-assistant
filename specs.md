@@ -98,7 +98,84 @@ The entire process will be orchestrated as a **Chat Flow** within Prompt Flow to
 
 ---
 
-#### **5. Prompt Flow Design: Nodes and Code**
+#### **5. Chain of Thought (CoT) Pattern: Multi-Stage Diagnostic Reasoning**
+
+The iTero Intelligent Troubleshooting Assistant will implement a structured Chain of Thought (CoT) pattern specifically designed for diagnostic reasoning. This pattern, named "Multi-Stage Diagnostic Reasoning" (MSDR), guides the LLM through a series of explicit reasoning steps before proposing actions or responses to the user.
+
+**Pattern Structure:**
+
+1. **Observation Stage**: The LLM analyzes raw data (logs, user descriptions) to identify key signals.
+   - Extract error codes, timestamps, sequences, and patterns
+   - Identify conflicting or anomalous signals
+   - Formulate initial hypotheses about what might be happening
+
+2. **Knowledge Integration Stage**: The LLM combines domain knowledge with observations.
+   - Map error codes to known issues in the knowledge base
+   - Identify relevant troubleshooting procedures
+   - Assess the applicability of each procedure to the current scenario
+   - Identify gaps in the current understanding
+
+3. **Reasoning Stage**: The LLM evaluates potential diagnoses and solution paths.
+   - Rank hypotheses by likelihood based on evidence
+   - Consider causal relationships between symptoms
+   - Evaluate previous remediation attempts and their outcomes
+   - Generate predictions about what would happen if each solution were applied
+   - Identify potential unintended consequences of each solution
+
+4. **Action Planning Stage**: The LLM determines the next best step.
+   - Select the most appropriate next action (suggest remedy, execute command, escalate)
+   - Detail exactly how the action should be performed
+   - Explain why this action is preferable to alternatives
+   - Predict what information will be gained from the action
+
+5. **Communication Stage**: The LLM prepares user-facing communication.
+   - Simplify technical details for clarity
+   - Provide context for why the action is recommended
+   - Set appropriate expectations for outcomes
+   - Ensure consent is requested when system changes are needed
+
+**Implementation in Prompt Flow:**
+
+This CoT pattern will be explicitly encoded in the system prompt for the State_Manager_LLM node. The prompt will instruct the model to follow these five stages of reasoning before outputting its final decision JSON. Each stage's reasoning will be captured in the logs for debugging, but only the final communication will be shown to users.
+
+The system prompt will include explicit instructions to "think step by step" through each of these stages, with dedicated sections for the model to document its reasoning at each stage.
+
+This structured approach offers several benefits:
+- Improves diagnostic accuracy by forcing systematic consideration of evidence
+- Creates traceable reasoning paths for QA and debugging
+- Reduces "hallucination" by grounding reasoning in specific observations and knowledge
+- Maintains consistent reasoning patterns across different troubleshooting scenarios
+- Allows for targeted improvement of specific reasoning stages
+
+**Integration with Zero-Shot and Few-Shot Learning:**
+
+The MSDR pattern will be implemented using a hybrid approach combining zero-shot and few-shot learning techniques:
+
+1. **Zero-Shot Learning Applications:**
+   - Initial error code categorization and classification
+   - Simple diagnostic scenarios with clear patterns
+   - Selection of appropriate troubleshooting domains
+   - Relevance assessment for retrieved knowledge base content
+   - Binary decision points (e.g., should a command be executed?)
+   - Novel error patterns not previously encountered
+
+2. **Few-Shot Learning Applications:**
+   - Complex diagnostic reasoning chains for known error patterns
+   - Multi-factor troubleshooting scenarios
+   - Distinguishing between similar but distinct error causes
+   - Command selection and parameter preparation
+   - Action prioritization when multiple potential solutions exist
+   - Formatting user-facing communications for clarity and comprehension
+
+3. **Hybrid Implementation Strategy:**
+   - Start with zero-shot for efficiency in the Observation and initial Knowledge Integration stages
+   - Apply few-shot examples when entering the Reasoning and Action Planning stages for complex issues
+   - Use few-shot with 2-3 carefully selected examples that best match the current scenario
+   - Dynamically adjust the number of examples based on error complexity and detection confidence
+   - Maintain a library of high-quality examples organized by error categories, components, and resolution patterns
+   - Regularly update examples based on successful troubleshooting interactions
+
+#### **6. Prompt Flow Design: Nodes and Code**
 
 **Flow Type:** Chat Flow
 
@@ -114,23 +191,96 @@ The entire process will be orchestrated as a **Chat Flow** within Prompt Flow to
 *   **Code:**
     ```python
     import re
-    from promptflow.core import tool
+    import os
+    from promptflow.core import tool, Connection
+    from openai import AzureOpenAI
 
     @tool
-    def analyze_scanner_logs(logs: str) -> dict:
-        # This function would contain sophisticated parsing logic.
-        # For this spec, we'll simulate it with regex.
+    def analyze_scanner_logs(logs: str, open_ai_connection: Connection) -> dict:
+        # First use regex for basic extraction
         error_codes = re.findall(r"ERROR_CODE:\s*(\d+)", logs)
         critical_warnings = re.findall(r"WARN:\s*(Critical.*)", logs)
         
-        problem_summary = f"The user's scanner reported the following error codes: {', '.join(error_codes)}. "
-        if critical_warnings:
-            problem_summary += f"It also logged critical warnings: {'; '.join(critical_warnings)}."
+        # Then use few-shot learning for enhanced log analysis
+        openai_client = AzureOpenAI(api_key=open_ai_connection.api_key, api_version="2023-07-01-preview", azure_endpoint=open_ai_connection.api_base)
+        
+        # Create a few-shot prompt with examples of good log analysis
+        prompt = f"""
+        Instructions: Analyze the scanner log to identify error codes, warnings, and provide a comprehensive problem statement.
+        
+        Example 1:
+        Log: 
+        2025-05-10T14:32:15 INFO: Scanner initialization started
+        2025-05-10T14:32:18 ERROR_CODE: 5001 Process iTeroScannerService.exe failed to start
+        2025-05-10T14:32:20 WARN: Critical - Unable to connect to calibration service
+        
+        Analysis:
+        {{
+            "error_codes": ["5001"],
+            "critical_warnings": ["Unable to connect to calibration service"],
+            "problem_statement": "The scanner's iTeroScannerService.exe process failed to start (error 5001) and cannot connect to the calibration service. This suggests a system service initialization failure that prevents normal scanner operation.",
+            "affected_components": ["iTeroScannerService.exe", "calibration service"],
+            "severity": "high"
+        }}
+
+        Example 2:
+        Log:
+        2025-06-01T09:15:22 INFO: Scanner connected to network
+        2025-06-01T09:15:25 ERROR_CODE: 4230 Insufficient storage space
+        2025-06-01T09:15:26 WARN: System has less than 500MB available storage
+        
+        Analysis:
+        {{
+            "error_codes": ["4230"],
+            "critical_warnings": ["System has less than 500MB available storage"],
+            "problem_statement": "The scanner has insufficient storage space (error 4230) with less than 500MB available. This may prevent scan data from being saved properly.",
+            "affected_components": ["storage system"],
+            "severity": "medium"
+        }}
+        
+        Now analyze this log:
+        {logs}
+        
+        Analysis:
+        """
+        
+        # Get enhanced analysis from the LLM
+        chat_model = os.environ.get("AZURE_OPENAI_GPT4O_DEPLOYMENT_NAME", "gpt-4o")
+        response = openai_client.chat.completions.create(
+            model=chat_model,
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"}
+        )
+        
+        # Parse the JSON response
+        try:
+            enhanced_analysis = response.choices[0].message.content
+            import json
+            analysis_json = json.loads(enhanced_analysis)
             
-        return {
-            "summary": problem_summary,
-            "error_codes": list(set(error_codes)) # Unique error codes
-        }
+            # Combine regex findings with LLM analysis
+            all_error_codes = list(set(error_codes + analysis_json.get("error_codes", [])))
+            problem_summary = analysis_json.get("problem_statement", f"The user's scanner reported the following error codes: {', '.join(all_error_codes)}.")
+            
+            # Return enhanced results
+            return {
+                "summary": problem_summary,
+                "error_codes": all_error_codes,
+                "affected_components": analysis_json.get("affected_components", []),
+                "severity": analysis_json.get("severity", "unknown")
+            }
+        except Exception as e:
+            # Fallback to basic analysis if JSON parsing fails
+            problem_summary = f"The user's scanner reported the following error codes: {', '.join(error_codes)}. "
+            if critical_warnings:
+                problem_summary += f"It also logged critical warnings: {'; '.join(critical_warnings)}."
+                
+            return {
+                "summary": problem_summary,
+                "error_codes": list(set(error_codes)),
+                "affected_components": [],
+                "severity": "unknown"
+            }
     ```
 
 **2. `Retrieve_KB_from_Pinecone_Python` (Python Tool)**
@@ -148,9 +298,53 @@ The entire process will be orchestrated as a **Chat Flow** within Prompt Flow to
         pinecone_client = Pinecone(api_key=os.environ.get("PINECONE_API_KEY"))
         openai_client = AzureOpenAI(api_key=open_ai_connection.api_key, api_version="2023-07-01-preview", azure_endpoint=open_ai_connection.api_base)
         
+        # Use few-shot learning to create a more effective query
+        chat_model = os.environ.get("AZURE_OPENAI_GPT4O_DEPLOYMENT_NAME", "gpt-4o")
+        
+        # Create a few-shot prompt to enhance the query
+        enhancement_prompt = f"""
+        I need to retrieve relevant troubleshooting information for iTero scanners from a vector database. 
+        Based on the problem description and error codes, generate an enhanced search query.
+
+        Here are examples of good query transformations:
+
+        Example 1:
+        Original problem: "Error 5001 - Process iTeroScannerService.exe failed to start"
+        Error codes: ["5001"]
+        Enhanced query: "iTeroScannerService.exe process failure startup error 5001 scanner service crash recovery"
+
+        Example 2:
+        Original problem: "Scanner showing 'Calibration Failed' message with error 3210"
+        Error codes: ["3210"]
+        Enhanced query: "iTero scanner calibration failure error 3210 recalibration procedure optical sensor alignment"
+
+        Example 3:
+        Original problem: "Network connection intermittently drops during scan upload"
+        Error codes: ["4230", "4231"]
+        Enhanced query: "iTero scanner network connection intermittent failure upload errors 4230 4231 wifi connectivity troubleshooting"
+
+        Now enhance this query:
+        Original problem: "{problem_data["summary"]}"
+        Error codes: {problem_data["error_codes"]}
+        Enhanced query:
+        """
+        
+        # Get enhanced query from the LLM
+        response = openai_client.chat.completions.create(
+            model=chat_model,
+            messages=[{"role": "user", "content": enhancement_prompt}],
+            temperature=0.3,
+            max_tokens=100
+        )
+        
+        enhanced_query = response.choices[0].message.content.strip()
+        
+        # Create combined query with original + enhanced
+        combined_query = problem_data["summary"] + " " + enhanced_query
+        
         # Get query embedding
         embedding_model = os.environ.get("AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME", "subhamoy-text-embeddings")
-        response = openai_client.embeddings.create(input=problem_data["summary"], model=embedding_model)
+        response = openai_client.embeddings.create(input=combined_query, model=embedding_model)
         query_vector = response.data[0].embedding
         
         # Query Pinecone
@@ -161,14 +355,54 @@ The entire process will be orchestrated as a **Chat Flow** within Prompt Flow to
             include_metadata=True
         )
         
-        # Format results
+        # Post-process results with zero-shot learning for relevance ranking
         retrieved_docs = []
         for match in results['matches']:
             retrieved_docs.append({
                 "source": match['metadata']['source_document'],
-                "text": match['metadata']['chunk_text']
+                "text": match['metadata']['chunk_text'],
+                "relevance_score": match['score']
             })
             
+        # Use zero-shot learning to evaluate relevance of retrieved documents
+        if retrieved_docs:
+            relevance_prompt = f"""
+            Assess the relevance of each retrieved document for resolving the problem described.
+            
+            Problem: {problem_data["summary"]}
+            Error codes: {problem_data["error_codes"]}
+            
+            For each document, assign a relevance score from 1-10, where 10 means directly addresses the problem and 1 means completely irrelevant.
+            Only output the numbers in a comma-separated list, nothing else.
+            """
+            
+            doc_texts = [doc["text"] for doc in retrieved_docs]
+            full_prompt = relevance_prompt + "\n\nDocuments to assess:\n" + "\n---\n".join(doc_texts)
+            
+            try:
+                response = openai_client.chat.completions.create(
+                    model=chat_model,
+                    messages=[{"role": "user", "content": full_prompt}],
+                    temperature=0.1,
+                    max_tokens=50
+                )
+                
+                # Try to parse comma-separated relevance scores
+                try:
+                    scores = [int(score.strip()) for score in response.choices[0].message.content.strip().split(",")]
+                    if len(scores) == len(retrieved_docs):
+                        for i, score in enumerate(scores):
+                            retrieved_docs[i]["ai_relevance_score"] = score
+                        
+                        # Sort by AI relevance score
+                        retrieved_docs.sort(key=lambda x: x.get("ai_relevance_score", 0), reverse=True)
+                except:
+                    # If parsing fails, keep original order
+                    pass
+            except:
+                # If API call fails, keep original order
+                pass
+                
         return retrieved_docs
     ```
 
@@ -177,14 +411,48 @@ The entire process will be orchestrated as a **Chat Flow** within Prompt Flow to
     *   `problem_summary: ${Analyze_Logs_Python.output.summary}`
     *   `retrieved_docs: ${Retrieve_KB_from_Pinecone_Python.output}`
     *   `chat_history: ${inputs.chat_history}`
+    *   `error_codes: ${Analyze_Logs_Python.output.error_codes}`
+    *   `affected_components: ${Analyze_Logs_Python.output.affected_components}`
+    *   `severity: ${Analyze_Logs_Python.output.severity}`
 *   **Prompt (Jinja):**
     ```jinja
     system:
     You are a sophisticated troubleshooting state manager for iTero scanners. Your role is to decide the next action in a troubleshooting conversation.
-    Analyze the user's original problem, the conversation history, and the provided knowledge base documents.
-    Based on this analysis, determine if you should suggest the next untried remedy, execute a command, if all remedies have been exhausted, or if you need to ask a clarifying question.
     
-    Your output MUST be a single, valid JSON object with the keys "action" and "details".
+    You must follow a structured Chain of Thought approach called "Multi-Stage Diagnostic Reasoning" (MSDR) with these five stages:
+    
+    1. OBSERVATION STAGE:
+    - Analyze raw logs and user descriptions to identify key signals
+    - Extract relevant error codes, timestamps, sequences, and patterns
+    - Identify conflicting or anomalous signals
+    - Formulate initial hypotheses
+    
+    2. KNOWLEDGE INTEGRATION STAGE:
+    - Map error codes to known issues in the knowledge base
+    - Identify relevant troubleshooting procedures
+    - Assess the applicability of each procedure to the current scenario
+    - Identify gaps in current understanding
+    
+    3. REASONING STAGE:
+    - Rank hypotheses by likelihood based on evidence
+    - Consider causal relationships between symptoms
+    - Evaluate previous remediation attempts and outcomes
+    - Generate predictions about what would happen if each solution were applied
+    - Identify potential unintended consequences
+    
+    4. ACTION PLANNING STAGE:
+    - Select the most appropriate next action
+    - Detail exactly how the action should be performed
+    - Explain why this action is preferable to alternatives
+    - Predict what information will be gained from the action
+    
+    5. COMMUNICATION STAGE:
+    - Simplify technical details for clarity
+    - Provide context for why the action is recommended
+    - Set appropriate expectations for outcomes
+    - Ensure consent is requested when system changes are needed
+    
+    After completing all five stages, your output MUST be a single, valid JSON object with the keys "action" and "details".
     Possible values for "action" are: "SUGGEST_REMEDY", "EXECUTE_COMMAND", "ALL_STEPS_EXHAUSTED", "CLARIFY".
     
     - If suggesting a remedy, "details" should contain the exact text of the remedy to provide to the user.
@@ -192,11 +460,82 @@ The entire process will be orchestrated as a **Chat Flow** within Prompt Flow to
     - If all steps are exhausted, "details" should be "All knowledge base steps have been attempted."
     - If clarifying, "details" should contain the question to ask the user.
     
-    Remember that system-modifying actions always require explicit user consent before execution. If you determine a command should be executed, include clear information about what the command will do and request confirmation from the user.
+    Here are examples of how to apply the MSDR framework to different scanner issues:
+    
+    EXAMPLE 1:
+    Problem: The scanner fails to connect to the network with error code 3045. The scanner shows "Network Connection Failed" message.
+    Error Codes: 3045
+    Affected Components: ["network", "wifi adapter"]
+    Severity: medium
+    Retrieved Knowledge Base:
+    - KB1: Error 3045 indicates WiFi driver issues. Try restarting the WiFi adapter.
+    - KB2: Network connection failures can be caused by incorrect network settings.
+    
+    Multi-Stage Diagnostic Reasoning:
+    
+    1. OBSERVATION STAGE:
+    Error code 3045 indicates a network connection failure. The error specifically points to WiFi connectivity issues. There are no conflicting signals in the logs. Initial hypothesis: Scanner's WiFi adapter or its driver is malfunctioning.
+    
+    2. KNOWLEDGE INTEGRATION STAGE:
+    Knowledge base entry KB1 directly maps to error code 3045 and suggests WiFi driver issues. KB1 recommends restarting the WiFi adapter as a solution. KB2 is relevant but less specific to the error code.
+    
+    3. REASONING STAGE:
+    Most likely cause: WiFi adapter driver issue. Restarting the adapter is a simple, non-invasive troubleshooting step with high success probability for driver issues. Alternative hypotheses like incorrect network settings are less likely based on the specific error code.
+    
+    4. ACTION PLANNING STAGE:
+    Recommend restarting the WiFi adapter as suggested in KB1. This action is preferable because it's non-invasive, quick to implement, and addresses the most likely cause. This will help determine if the issue is transient or persistent.
+    
+    5. COMMUNICATION STAGE:
+    Provide clear instructions on restarting the WiFi adapter in simple terms. Explain that this is a common solution for connectivity issues and sets proper expectations about the outcome.
+    
+    Final Decision:
+    {"action": "SUGGEST_REMEDY", "details": "Your scanner is having trouble connecting to the network. Let's try restarting the WiFi adapter: 1) Go to Settings > Network on your scanner's touchscreen. 2) Toggle the WiFi switch off. 3) Wait 10 seconds. 4) Toggle the WiFi switch back on. Please let me know if this resolves the connection issue."}
+    
+    EXAMPLE 2:
+    Problem: Scanner calibration fails with error code 5001. Process iTeroScannerService.exe is not responding.
+    Error Codes: 5001
+    Affected Components: ["iTeroScannerService.exe", "calibration module"]
+    Severity: high
+    Retrieved Knowledge Base:
+    - KB3: Error 5001 often indicates the scanner service has crashed or is unresponsive. Terminating and restarting the process usually resolves this.
+    - KB4: Calibration failures may be related to outdated firmware.
+    Conversation history shows user already tried turning the scanner off and on without success.
+    
+    Multi-Stage Diagnostic Reasoning:
+    
+    1. OBSERVATION STAGE:
+    Error code 5001 indicates that iTeroScannerService.exe is not responding, preventing calibration. User has already attempted a full restart without success, suggesting a persistent issue with the service.
+    
+    2. KNOWLEDGE INTEGRATION STAGE:
+    KB3 directly addresses error 5001 and suggests terminating and restarting the specific process. KB4 mentions firmware but is less relevant to the immediate issue.
+    
+    3. REASONING STAGE:
+    The most likely cause is a hung process that wasn't properly terminated during the restart. Since a full system restart didn't resolve the issue, a targeted process termination is needed. This has a high probability of success based on the knowledge base.
+    
+    4. ACTION PLANNING STAGE:
+    Execute command to terminate the problematic process. This requires elevated permissions, so user consent is mandatory. This is preferable to suggesting another restart since that was already attempted without success.
+    
+    5. COMMUNICATION STAGE:
+    Clearly explain what process needs to be terminated, why, and that this requires permission. Set expectations about the need to recalibrate afterward.
+    
+    Final Decision:
+    {"action": "EXECUTE_COMMAND", "details": {"command_id": "kill_process", "params": {"process_name": "iTeroScannerService.exe"}, "request_consent": true}}
 
     user:
     **Original Problem:**
     {{problem_summary}}
+    
+    **Error Codes Detected:**
+    {% for code in error_codes %}
+    - {{code}}
+    {% endfor %}
+
+    **Affected Components:**
+    {% for component in affected_components %}
+    - {{component}}
+    {% endfor %}
+    
+    **Severity:** {{severity}}
 
     **Conversation History:**
     {% for item in chat_history %}
@@ -206,8 +545,25 @@ The entire process will be orchestrated as a **Chat Flow** within Prompt Flow to
 
     **Available Knowledge Base Steps:**
     {{retrieved_docs}}
-
-    **Decision in JSON format:**
+    
+    **Multi-Stage Diagnostic Reasoning:**
+    
+    1. OBSERVATION STAGE:
+    <Think in detail about what key signals, patterns and anomalies are present in the logs and conversation>
+    
+    2. KNOWLEDGE INTEGRATION STAGE:
+    <Think about how the observed signals map to known issues and knowledge base entries>
+    
+    3. REASONING STAGE:
+    <Think about the hypotheses, evaluate past remediation attempts, and consider cause-effect relationships>
+    
+    4. ACTION PLANNING STAGE:
+    <Think about what action to take next and why it's the best option>
+    
+    5. COMMUNICATION STAGE:
+    <Think about how to clearly communicate this to the user>
+    
+    **Final Decision in JSON format:**
     ```
 *   **Deployment:** `gpt-4o`
 
