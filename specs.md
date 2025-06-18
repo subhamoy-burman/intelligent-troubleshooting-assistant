@@ -616,7 +616,7 @@ The MSDR pattern will be implemented using a hybrid approach combining zero-shot
     Multiple critical error codes indicate a system-wide failure across multiple components. The scanner has been unresponsive for hours despite restart attempts.
     
     2. KNOWLEDGE INTEGRATION STAGE:
-    Knowledge base entries exist for some errors but not the combination of all three. The multiple errors suggest a more serious underlying issue.
+    Knowledge base entries exist for some errors but not the combination of all three. The multiple errors suggest a possible hardware failure or severe system corruption. All software-based remediation steps have been exhausted.
     
     3. REASONING STAGE:
     The combination of network, service, and calibration errors suggests a possible hardware failure or severe system corruption. All software-based remediation steps have been exhausted.
@@ -835,9 +835,104 @@ The MSDR pattern will be implemented using a hybrid approach combining zero-shot
 
 ---
 
-#### **6. External Systems & Dependencies**
+#### **7. Azure OpenAI Monitoring & Request Filtering**
 
-*   **Pinecone:** Requires an active account, API key, and a pre-populated index.
-*   **Internal Ticketing System:** Requires a stable, documented REST API endpoint (`POST /api/tickets`) and an authentication mechanism (e.g., API Key/Bearer Token).
-*   **Scanner Application:** Must be capable of making HTTPS requests to the deployed Prompt Flow endpoint and rendering a chat UI.
-*   **Command Execution Service:** Must be installed and properly configured on the Windows system where commands need to be executed.
+To ensure optimal performance, security, and cost management of the Azure OpenAI service used in this solution, a comprehensive monitoring and request filtering strategy will be implemented. This strategy addresses the need to monitor and filter high-volume requests by client ID, IP, or machine.
+
+**Components:**
+
+1. **Client/Machine Identification System:**
+   * Each scanner device will be assigned a unique `client_id` included in all API requests to Azure OpenAI.
+   * The `user` parameter in Azure OpenAI API requests will include this client identifier in the format: `scanner_id:location_id:serial_number`.
+   * Optional custom headers will include additional metadata like scanner model, software version, and last maintenance date.
+
+2. **Azure Monitor Diagnostic Settings:**
+   * Configure diagnostic settings for the Azure OpenAI service to route logs to Azure Log Analytics workspace.
+   * Enable collection of the following log categories:
+     * `RequestResponse`: Captures full request/response pairs with client identifiers
+     * `Trace`: Captures detailed diagnostic information
+     * `AuditEvent`: Captures management operations
+   * Enable all metrics for token usage, request volumes, and latency tracking.
+
+3. **Log Analytics Workspace:**
+   * A dedicated Log Analytics workspace will store and process logs from the Azure OpenAI service.
+   * Retention period set to 90 days for operational data and 2 years for compliance/audit data.
+   * Implement custom Kusto query library for common monitoring scenarios.
+
+4. **Azure Monitor Alerts:**
+   * Set up the following alert types:
+     * **Token consumption**: Alert when approaching quota limits (80% threshold)
+     * **Request volume**: Alert on unusual increases in requests (>50% from baseline)
+     * **Client-specific**: Alert when a single client/machine exceeds predetermined thresholds
+     * **Error rate**: Alert when error rates exceed 5% of total requests
+     * **Latency**: Alert when response times exceed 5 seconds for non-complex prompts
+
+5. **Request Filtering & Rate Limiting Strategy:**
+   * **Azure API Management layer** will be deployed in front of the Azure OpenAI service to:
+     * Apply per-client rate limiting based on scanner ID
+     * Apply IP-based throttling to prevent abuse
+     * Filter requests based on content and size
+     * Cache responses when appropriate to reduce token usage
+     * Apply custom header validation
+
+6. **Client-Side Throttling:**
+   * Implement exponential backoff retry logic in scanner application for 429 responses
+   * Local token counting to avoid exceeding quotas
+   * Local rate limiter to maintain maximum requests per minute per device
+   * Circuit breaker pattern to prevent cascading failures
+
+7. **Monitoring Dashboard:**
+   * Create an Azure dashboard with the following visualizations:
+     * Token usage by model, client, and time period
+     * Request volume by client ID and geographic region
+     * Error rates and types
+     * Response latency trends
+     * Quota utilization and forecasting
+
+**Kusto Queries for Common Monitoring Scenarios:**
+
+```kusto
+// Query for high-volume clients by client ID
+AzureDiagnostics
+| where Category == "RequestResponse" 
+| where ResourceProvider == "MICROSOFT.COGNITIVESERVICES" 
+| where ResourceType == "ACCOUNTS"
+| extend user = tostring(parse_json(properties_s).user)
+| extend client_id = extract("scanner_id:([^:]+)", 1, user)
+| summarize request_count = count(), token_count = sum(toint(properties_s.token_count)) by client_id, bin(TimeGenerated, 1h)
+| order by request_count desc
+
+// Query for requests by IP address
+AzureDiagnostics
+| where Category == "RequestResponse" 
+| where ResourceProvider == "MICROSOFT.COGNITIVESERVICES" 
+| where ResourceType == "ACCOUNTS"
+| extend callerIpAddress = tostring(parse_json(properties_s).callerIpAddress)
+| summarize request_count = count() by callerIpAddress, bin(TimeGenerated, 1d)
+| order by request_count desc
+
+// Query for errors by client ID
+AzureDiagnostics
+| where Category == "RequestResponse" 
+| where ResourceProvider == "MICROSOFT.COGNITIVESERVICES" 
+| where ResourceType == "ACCOUNTS"
+| where properties_s has "error"
+| extend user = tostring(parse_json(properties_s).user)
+| extend client_id = extract("scanner_id:([^:]+)", 1, user)
+| extend error_code = tostring(parse_json(properties_s).error.code)
+| summarize error_count = count() by client_id, error_code, bin(TimeGenerated, 1d)
+| order by error_count desc
+```
+
+**Implementation Steps:**
+
+1. Configure Azure OpenAI diagnostic settings to send logs to Log Analytics
+2. Set up Azure API Management service as a gateway for the Azure OpenAI endpoint
+3. Configure rate limiting policies in API Management based on client identification
+4. Update the scanner application to include client identifiers in requests
+5. Create Azure Monitor alert rules for the defined thresholds
+6. Implement client-side throttling and retry logic
+7. Deploy the monitoring dashboard
+8. Document the monitoring and filtering procedures for operations teams
+
+This monitoring and filtering system will enable effective tracking of Azure OpenAI usage across all scanner devices, identification of problematic usage patterns, and automated enforcement of usage policies to control costs and ensure service availability for all users.

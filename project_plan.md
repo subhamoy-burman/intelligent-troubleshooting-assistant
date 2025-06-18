@@ -329,6 +329,76 @@ This document outlines the end-to-end project plan for implementing 3. **Prompt 
    - Establish escalation procedures
    - Document support handover completion
 
+### Phase 9: Azure OpenAI Monitoring & Request Filtering Implementation (2 weeks)
+
+*November 4, 2025 - November 17, 2025*
+
+#### Implementation Activities
+
+1. **Client/Machine Identification Implementation**
+   - Design client identification schema (scanner_id:location_id:serial_number)
+   - Implement client ID inclusion in all Azure OpenAI API requests via the `user` parameter
+   - Configure custom headers for additional device metadata
+   - Update scanner application to pass identifying information consistently
+   - Create client identification documentation for operations team
+
+2. **Azure Monitor & Diagnostic Settings Configuration**
+   - Configure Azure OpenAI resource to send logs to Log Analytics
+   - Enable all relevant diagnostic log categories (RequestResponse, Trace, AuditEvent)
+   - Set up metrics collection for token usage, latency, and request volume
+   - Configure workspace retention policies (90 days operational, 2 years compliance)
+   - Verify log collection and query capabilities
+
+3. **Azure API Management Gateway Setup**
+   - Deploy API Management service as gateway for Azure OpenAI endpoints
+   - Implement rate limiting policies based on client identification
+   - Configure IP-based throttling rules
+   - Set up request validation and filtering policies
+   - Implement response caching for appropriate scenarios
+   - Test end-to-end request flow through API Management to Azure OpenAI
+
+4. **Alert Rules & Monitoring Implementation**
+   - Create Azure Monitor alert rules for:
+     - Token consumption approaching quota limits (80% threshold)
+     - Unusual request volume increases (>50% from baseline)
+     - Per-client overusage alerts
+     - High error rates (>5% of requests)
+     - Latency exceeding thresholds (>5 seconds)
+   - Configure alert notifications via email and webhook integration with service desk
+   - Test alert triggering and notification flow
+   - Document alert response procedures
+
+5. **Client-Side Throttling Logic**
+   - Develop exponential backoff retry strategy for rate limit responses
+   - Implement local token counting mechanism
+   - Create client-side rate limiting logic
+   - Add circuit breaker pattern to prevent cascading failures
+   - Integrate with scanner application error handling
+   - Test under various failure conditions
+
+6. **Monitoring Dashboard Creation**
+   - Design comprehensive Azure dashboard with key visualizations
+   - Implement Kusto queries for common monitoring scenarios
+   - Create visualizations for:
+     - Token usage by model, client, and time
+     - Request volume by client ID and region
+     - Error rates and patterns
+     - Response latency trends
+     - Quota utilization and forecasting
+   - Test dashboard with real and simulated data
+   - Document dashboard usage for operations team
+
+7. **Operational Procedures & Documentation**
+   - Develop operational playbooks for common monitoring scenarios
+   - Create documentation for:
+     - Identifying problematic clients/machines
+     - Implementing temporary or permanent client restrictions
+     - Handling quota increase requests
+     - Performing root cause analysis on usage spikes
+     - Monthly usage review procedures
+   - Train support and operations teams on monitoring tools
+   - Conduct monitoring and response simulation exercises
+
 ## Risk Management
 
 | Risk | Impact | Probability | Mitigation Strategy |
@@ -346,6 +416,11 @@ This document outlines the end-to-end project plan for implementing 3. **Prompt 
 | Incorrect or misleading reasoning in diagnostic stages | High | Medium | Create specialized test suites for each reasoning stage; implement automatic evaluation metrics; log and review reasoning processes |
 | Few-shot examples become outdated or unrepresentative | Medium | Medium | Implement periodic review and update process; monitor accuracy metrics by error category; add mechanism to suggest new examples based on real usage |
 | Zero-shot approach fails for novel error scenarios | High | Medium | Implement automatic fallback to few-shot with diverse examples; ensure human review of low-confidence responses; establish process to continuously update examples from real-world cases |
+| Azure OpenAI quota exhaustion | High | Medium | Implement thorough monitoring with alerts at 80% threshold; client-side throttling; request caching where appropriate |
+| Single client consuming disproportionate resources | Medium | High | Per-client rate limiting in API Management; client-side throttling; automated alerts for anomalous usage |
+| API Management adds latency | Medium | Medium | Performance testing; optimize policies; ensure appropriate API Management tier; implement caching |
+| Log volume overwhelms Log Analytics | Medium | Low | Configure appropriate retention policies; monitor Log Analytics workspace usage; optimize log queries |
+| Client identification system failure | High | Low | Implement robust error handling; fallback identification methods; regular validation of client ID integrity |
 
 ## Success Metrics
 
@@ -369,6 +444,13 @@ This document outlines the end-to-end project plan for implementing 3. **Prompt 
 | Few-shot learning efficacy | >90% accuracy improvement when adding examples for complex error scenarios |
 | Learning approach selection | >95% correctly identified when to use zero-shot vs. few-shot approaches |
 | Multi-function orchestration | >85% accurate execution of multi-step troubleshooting requiring multiple function calls |
+| Client identification coverage | 100% of requests include valid client identifiers |
+| High-volume request detection | Identify and alert on anomalous usage within 5 minutes |
+| Throttling effectiveness | No single client can consume >10% of total quota |
+| Alert accuracy | <5% false positive rate for usage alerts |
+| Monitoring dashboard usage | Operations team accesses dashboard at least once daily |
+| Cost control effectiveness | Monthly token usage remains within 90% of budgeted amount |
+| Request filtering accuracy | Successfully identify and rate-limit 99% of excessive requests |
 
 ## Dependencies
 
@@ -379,6 +461,9 @@ This document outlines the end-to-end project plan for implementing 3. **Prompt 
    - Azure OpenAI model versions with parallel function calling capabilities
    - Pinecone service tier and capacity
    - Local file system access for document monitoring in pilot phase
+   - Azure API Management service appropriate tier
+   - Azure Log Analytics workspace with sufficient capacity
+   - Azure Monitor for alerting capabilities
 
 2. **Internal Dependencies**:
    - Support team availability for knowledge base content creation
@@ -386,6 +471,9 @@ This document outlines the end-to-end project plan for implementing 3. **Prompt 
    - Scanner software release schedule for UI integration
    - Function schema definition and standardization
    - Tool response format standardization for function calling
+   - Scanner application API client library modifications to include client identifiers
+   - Operations team trained on monitoring tools and alert response
+   - Clear ownership of quota management and monitoring responsibilities
 
 ## Decision Points and Questions
 
@@ -439,6 +527,20 @@ Throughout the project, several key decisions will need to be made that may requ
 10. **User Consent Approach**: How should we balance ease of use with security when requesting consent for system modifications?
 
 11. **Metrics Collection**: What user interaction data should we collect to improve the system while respecting privacy?
+
+12. **API Management Tier Selection**: What tier of Azure API Management is appropriate based on expected request volume and latency requirements?
+
+13. **Log Retention Strategy**: What is the optimal retention period for different log categories considering compliance, troubleshooting, and cost factors?
+
+14. **Client Throttling Limits**: What specific rate limits should be applied for different scanner models, customer tiers, or usage scenarios?
+
+15. **Alert Thresholds Fine-tuning**: Should alert thresholds be adjusted based on historical usage patterns after initial deployment?
+
+16. **Regional Monitoring Considerations**: How should monitoring be adapted for multi-region deployments with different regional quotas?
+
+17. **Custom Header Strategy**: Which specific metadata should be included in custom headers versus in the user parameter for optimal filtering and analysis?
+
+18. **Monitoring Access Control**: Which roles in the organization should have access to different components of the monitoring system?
 
 ## Next Steps
 
